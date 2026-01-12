@@ -1,0 +1,89 @@
+import requests, csv, smtplib, os, re
+from bs4 import BeautifulSoup
+from email.message import EmailMessage
+from datetime import datetime, timedelta
+import pytz
+
+TZ = pytz.timezone("Asia/Kolkata")
+NOW = datetime.now(TZ)
+TODAY = NOW.strftime("%Y-%m-%d")
+CUTOFF = NOW - timedelta(hours=24)
+
+SKILLS = ["sql", "python", "power bi", "excel"]
+ROLES = ["data analyst", "junior data analyst", "data analyst intern"]
+LOCATION = "bangalore"
+
+HEADERS = {"User-Agent": "Mozilla/5.0"}
+
+def score(text):
+    t = text.lower()
+    s = sum(15 for k in SKILLS if k in t)
+    if any(x in t for x in ["entry", "junior", "intern", "fresher"]):
+        s += 20
+    if "bangalore" in t or "remote" in t:
+        s += 15
+    return s
+
+def indeed():
+    jobs = []
+    url = "https://in.indeed.com/jobs?q=data+analyst&l=Bangalore&fromage=1"
+    soup = BeautifulSoup(requests.get(url, headers=HEADERS).text, "html.parser")
+
+    for c in soup.select(".job_seen_beacon"):
+        title = c.h2.text.strip()
+        if not any(r in title.lower() for r in ROLES):
+            continue
+        link = "https://in.indeed.com" + c.a["href"]
+        posted = c.select_one(".date").text.strip()
+
+        jobs.append({
+            "Role": title,
+            "Location": "Bangalore",
+            "Posted": posted,
+            "Link": link,
+            "Why": "SQL/Python/BI + entry-level fit",
+            "Score": score(title)
+        })
+    return jobs
+
+def send_email(body, attachment):
+    msg = EmailMessage()
+    msg["Subject"] = f"Daily Data Analyst Jobs — {TODAY}"
+    msg["From"] = os.environ["EMAIL_USER"]
+    msg["To"] = os.environ["EMAIL_TO"]
+    msg.set_content(body)
+
+    with open(attachment, "rb") as f:
+        msg.add_attachment(f.read(), maintype="text", subtype="csv", filename=attachment)
+
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as s:
+        s.login(os.environ["EMAIL_USER"], os.environ["EMAIL_PASS"])
+        s.send_message(msg)
+
+def main():
+    jobs = indeed()
+    jobs = sorted({(j["Role"], j["Location"]): j for j in jobs}.values(),
+                  key=lambda x: x["Score"], reverse=True)[:20]
+
+    csv_file = f"jobs_{TODAY}.csv"
+    with open(csv_file, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=["Role","Location","Posted","Link","Why"])
+        writer.writeheader()
+        writer.writerows(jobs)
+
+    body = f"Run time: {TODAY} IST\n\n"
+    if not jobs:
+        body += "No verified postings within last 24 hours.\n"
+    else:
+        for i, j in enumerate(jobs[:3], 1):
+            body += f"{i}. {j['Role']} — {j['Location']} ({j['Posted']})\n"
+
+        body += "\nResume tweaks for #1 role:\n"
+        body += "- Optimized SQL queries for analytics reporting\n"
+        body += "- Built Power BI dashboards for stakeholders\n"
+        body += "- Automated analysis workflows using Python\n"
+
+    send_email(body, csv_file)
+
+if __name__ == "__main__":
+    main()
